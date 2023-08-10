@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use std::{collections::BTreeMap, ops::Range};
+use std::{collections::BTreeMap, io::Write, ops::Range};
 
 use opts::{Format, ToDump};
 pub mod asm;
@@ -132,20 +132,25 @@ pub fn get_dump_range(
                 .1,
         );
     }
+
+    let dump_index = |value| {
+        if let Some(range) = items.values().nth(value) {
+            Some(range.clone())
+        } else {
+            let actual = items.len();
+            safeprintln!(
+                "You asked to display item #{value} (zero based), but there's only {actual} items"
+            );
+            std::process::exit(1);
+        }
+    };
+
     match goal {
         // to dump everything just return an empty range
         ToDump::Everything => None,
 
         // By index without filtering
-        ToDump::ByIndex { value } => {
-            if let Some(range) = items.values().nth(value) {
-                Some(range.clone())
-            } else {
-                let actual = items.len();
-                safeprintln!("You asked to display item #{value} (zero based), but there's only {actual} items");
-                std::process::exit(1);
-            }
-        }
+        ToDump::ByIndex { value } => dump_index(value),
 
         // By index with filtering
         ToDump::Function { function, nth } => {
@@ -175,6 +180,65 @@ pub fn get_dump_range(
                 std::process::exit(1);
             };
             Some(range)
+        }
+
+        ToDump::Interactive => {
+            use std::process::{Command, Stdio};
+
+            // TODO: check for various fuzzy finders in PATH
+            let mut selector = Command::new("fzf");
+            selector
+                .arg("--no-sort")
+                .arg("--tac")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped());
+
+            let preview = true;
+            if preview {
+                let src_cmd: Vec<String> = std::env::args()
+                    .filter(|x| x != "-i" && x != "--interactive")
+                    .collect();
+                let mut preview = src_cmd.join(" ");
+
+                if fmt.color {
+                    preview.push_str(" --color");
+                }
+
+                // TODO: make platform agnostic or expose --quiet
+                preview.push_str(" {1} 2> /dev/null");
+
+                selector
+                    .args(["--delimiter", ": "])
+                    .args(["--nth", "2"])
+                    .args(["--preview-window", "up,60%,border-horizontal"])
+                    .arg("--preview")
+                    .arg(preview);
+            }
+
+            let selector = selector
+                .spawn()
+                .expect("Failed to start interactive process");
+
+            let mut input = selector.stdin.as_ref().expect("Pipe closed unexpectedly");
+
+            let width = items.len().ilog10() as usize + 1;
+            for (ix, item) in items.keys().enumerate() {
+                // TODO: write in batches
+                writeln!(input, "{:width$}: {}", ix, item.name).expect("Pipe closed unexpectedly");
+            }
+
+            let out = selector
+                .wait_with_output()
+                .expect("Interactive Process Failure");
+            // TODO: handle empty select
+            let selected_index = String::from_utf8(out.stdout)
+                .expect("Non valid UTF-8")
+                .trim_start()
+                .split_once(':')
+                .and_then(|(first, _)| first.parse::<usize>().ok())
+                .expect("Expected format (num: text)");
+
+            dump_index(selected_index)
         }
 
         // Unspecified, so print suggestions and exit

@@ -136,6 +136,10 @@ pub enum ToDump {
         nth: Option<usize>,
     },
 
+    /// Dump a function selected via interactive CLI
+    #[bpaf(short('i'), long)]
+    Interactive,
+
     #[bpaf(skip)]
     Unspecified,
 }
