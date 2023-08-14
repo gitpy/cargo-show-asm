@@ -2,7 +2,9 @@
 use crate::asm::statements::Label;
 use crate::cached_lines::CachedLines;
 use crate::demangle::LabelKind;
-use crate::{color, demangle, esafeprintln, get_dump_range, safeprintln, Item};
+use crate::{
+    color, demangle, esafeprintln, get_dump_range, interactive_mode, safeprintln, DumpRange, Item,
+};
 // TODO, use https://sourceware.org/binutils/docs/as/index.html
 use crate::opts::{Format, ToDump};
 
@@ -12,6 +14,7 @@ use owo_colors::OwoColorize;
 use statements::{parse_statement, Directive, Loc, Statement};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -133,90 +136,103 @@ fn used_labels<'a>(stmts: &'_ [Statement<'a>]) -> BTreeSet<&'a str> {
         .collect::<BTreeSet<_>>()
 }
 
-pub fn dump_range(
-    files: &BTreeMap<u64, (std::borrow::Cow<Path>, Option<CachedLines>)>,
-    fmt: &Format,
-    stmts: &[Statement],
-) -> anyhow::Result<()> {
-    let mut prev_loc = Loc::default();
+struct AsmDumpCtx<'a> {
+    files: &'a BTreeMap<u64, (std::borrow::Cow<'a, Path>, Option<CachedLines>)>,
+    fmt: &'a Format,
+    stmts: &'a [Statement<'a>],
+}
 
-    let used = if fmt.keep_labels {
-        BTreeSet::new()
-    } else {
-        used_labels(stmts)
-    };
+impl DumpRange for AsmDumpCtx<'_> {
+    fn dump_range_into_writer(
+        &self,
+        range: Option<Range<usize>>,
+        writer: &mut impl Write,
+    ) -> anyhow::Result<()> {
+        let &Self { files, fmt, stmts } = self;
+        let stmts = range.map_or(stmts, |r| &stmts[r]);
 
-    let mut empty_line = false;
-    for line in stmts.iter() {
-        if fmt.verbosity > 2 {
-            safeprintln!("{line:?}");
-        }
-        if let Statement::Directive(Directive::File(_)) = &line {
-        } else if let Statement::Directive(Directive::Loc(loc)) = &line {
-            if !fmt.rust {
-                continue;
-            }
-            if loc.line == 0 {
-                continue;
-            }
-            if loc == &prev_loc {
-                continue;
-            }
-            prev_loc = *loc;
-            match files.get(&loc.file) {
-                Some((fname, Some(file))) => {
-                    let rust_line = &file[loc.line as usize - 1];
-                    let pos = format!("\t\t// {} : {}", fname.display(), loc.line);
-                    safeprintln!("{}", color!(pos, OwoColorize::cyan));
-                    safeprintln!(
-                        "\t\t{}",
-                        color!(rust_line.trim_start(), OwoColorize::bright_red)
-                    );
-                }
-                Some((fname, None)) => {
-                    if fmt.verbosity > 0 {
-                        safeprintln!(
-                            "\t\t{} {}",
-                            color!("//", OwoColorize::cyan),
-                            color!(
-                                "Can't locate the file, please open a ticket with cargo-show-asm",
-                                OwoColorize::red
-                            ),
-                        );
-                    }
-                    let pos = format!("\t\t// {} : {}", fname.display(), loc.line);
-                    safeprintln!("{}", color!(pos, OwoColorize::cyan));
-                }
-                None => {
-                    panic!("DWARF file refers to an undefined location {loc:?}");
-                }
-            }
-            empty_line = false;
-        } else if let Statement::Label(Label {
-            kind: kind @ (LabelKind::Local | LabelKind::Temp),
-            id,
-        }) = line
-        {
-            if fmt.keep_labels || used.contains(id) {
-                safeprintln!("{line}");
-            } else if !empty_line && *kind != LabelKind::Temp {
-                safeprintln!();
-                empty_line = true;
-            }
+        let mut prev_loc = Loc::default();
+
+        let used = if fmt.keep_labels {
+            BTreeSet::new()
         } else {
-            if fmt.simplify && matches!(line, Statement::Directive(_) | Statement::Dunno(_)) {
-                continue;
-            }
+            used_labels(stmts)
+        };
 
-            empty_line = false;
-            #[allow(clippy::match_bool)]
-            match fmt.full_name {
-                true => safeprintln!("{line:#}"),
-                false => safeprintln!("{line}"),
+        let mut empty_line = false;
+        for line in stmts.iter() {
+            if fmt.verbosity > 2 {
+                writeln!(writer, "{line:?}")?;
+            }
+            if let Statement::Directive(Directive::File(_)) = &line {
+            } else if let Statement::Directive(Directive::Loc(loc)) = &line {
+                if !fmt.rust {
+                    continue;
+                }
+                if loc.line == 0 {
+                    continue;
+                }
+                if loc == &prev_loc {
+                    continue;
+                }
+                prev_loc = *loc;
+                match files.get(&loc.file) {
+                    Some((fname, Some(file))) => {
+                        let rust_line = &file[loc.line as usize - 1];
+                        let pos = format!("\t\t// {} : {}", fname.display(), loc.line);
+                        writeln!(writer, "{}", color!(pos, OwoColorize::cyan))?;
+                        writeln!(
+                            writer,
+                            "\t\t{}",
+                            color!(rust_line.trim_start(), OwoColorize::bright_red)
+                        )?;
+                    }
+                    Some((fname, None)) => {
+                        if fmt.verbosity > 0 {
+                            writeln!(
+                                writer,
+                                "\t\t{} {}",
+                                color!("//", OwoColorize::cyan),
+                                color!(
+                            "Can't locate the file, please open a ticket with cargo-show-asm",
+                            OwoColorize::red
+                        ),
+                            )?;
+                        }
+                        let pos = format!("\t\t// {} : {}", fname.display(), loc.line);
+                        writeln!(writer, "{}", color!(pos, OwoColorize::cyan))?;
+                    }
+                    None => {
+                        panic!("DWARF file refers to an undefined location {loc:?}");
+                    }
+                }
+                empty_line = false;
+            } else if let Statement::Label(Label {
+                kind: kind @ (LabelKind::Local | LabelKind::Temp),
+                id,
+            }) = line
+            {
+                if fmt.keep_labels || used.contains(id) {
+                    writeln!(writer, "{line}")?;
+                } else if !empty_line && *kind != LabelKind::Temp {
+                    writeln!(writer)?;
+                    empty_line = true;
+                }
+            } else {
+                if fmt.simplify && matches!(line, Statement::Directive(_) | Statement::Dunno(_)) {
+                    continue;
+                }
+
+                empty_line = false;
+                #[allow(clippy::match_bool)]
+                match fmt.full_name {
+                    true => writeln!(writer, "{line:#}")?,
+                    false => writeln!(writer, "{line}")?,
+                }
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 // DWARF information contains references to souce files
@@ -351,13 +367,20 @@ pub fn dump_function(
         load_rust_sources(sysroot, &statements, fmt, &mut files);
     }
 
-    if let Some(range) = get_dump_range(goal, fmt, functions) {
-        dump_range(&files, fmt, &statements[range])?;
+    let dump_ctx = AsmDumpCtx {
+        files: &files,
+        fmt,
+        stmts: &statements,
+    };
+
+    if let ToDump::Interactive = goal {
+        interactive_mode(&functions, dump_ctx);
     } else {
-        if fmt.verbosity > 0 {
+        let range = get_dump_range(goal, fmt, functions);
+        if fmt.verbosity > 0 && range.is_none() {
             safeprintln!("Going to print the whole file");
         }
-        dump_range(&files, fmt, &statements)?;
+        dump_ctx.dump_range(range)?;
     }
     Ok(())
 }

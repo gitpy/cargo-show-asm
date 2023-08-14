@@ -134,6 +134,12 @@ fn main() -> anyhow::Result<()> {
     let opts = opts::options().run();
     owo_colors::set_override(opts.format.color);
 
+    #[cfg(feature = "ipc")]
+    if let Some(client) = opts.client {
+        cargo_show_asm::ipc::start_client(client);
+        return Ok(());
+    }
+
     let sysroot = sysroot()?;
     if opts.format.verbosity > 0 {
         esafeprintln!("Found sysroot: {}", sysroot.display());

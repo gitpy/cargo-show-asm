@@ -31,6 +31,7 @@ pub fn dump_function(
 
     let lines = contents.lines().collect::<Vec<_>>();
 
+    //TODO: add interactive support or msg that interactive is not supported for mca
     let lines = if let Some(range) = get_dump_range(goal, fmt, functions) {
         &lines[range]
     } else {

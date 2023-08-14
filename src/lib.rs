@@ -1,11 +1,19 @@
 #![doc = include_str!("../README.md")]
 
-use std::{collections::BTreeMap, io::Write, ops::Range};
+use std::{
+    collections::BTreeMap,
+    io::{self, Write},
+    ops::Range,
+};
 
 use opts::{Format, ToDump};
+
 pub mod asm;
 pub mod cached_lines;
 pub mod demangle;
+
+#[cfg(feature = "ipc")]
+pub mod ipc;
 pub mod llvm;
 pub mod mca;
 pub mod mir;
@@ -183,62 +191,7 @@ pub fn get_dump_range(
         }
 
         ToDump::Interactive => {
-            use std::process::{Command, Stdio};
-
-            // TODO: check for various fuzzy finders in PATH
-            let mut selector = Command::new("fzf");
-            selector
-                .arg("--no-sort")
-                .arg("--tac")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped());
-
-            let preview = true;
-            if preview {
-                let src_cmd: Vec<String> = std::env::args()
-                    .filter(|x| x != "-i" && x != "--interactive")
-                    .collect();
-                let mut preview = src_cmd.join(" ");
-
-                if fmt.color {
-                    preview.push_str(" --color");
-                }
-
-                // TODO: make platform agnostic or expose --quiet
-                preview.push_str(" {1} 2> /dev/null");
-
-                selector
-                    .args(["--delimiter", ": "])
-                    .args(["--nth", "2"])
-                    .args(["--preview-window", "up,60%,border-horizontal"])
-                    .arg("--preview")
-                    .arg(preview);
-            }
-
-            let selector = selector
-                .spawn()
-                .expect("Failed to start interactive process");
-
-            let mut input = selector.stdin.as_ref().expect("Pipe closed unexpectedly");
-
-            let width = items.len().ilog10() as usize + 1;
-            for (ix, item) in items.keys().enumerate() {
-                // TODO: write in batches
-                writeln!(input, "{:width$}: {}", ix, item.name).expect("Pipe closed unexpectedly");
-            }
-
-            let out = selector
-                .wait_with_output()
-                .expect("Interactive Process Failure");
-            // TODO: handle empty select
-            let selected_index = String::from_utf8(out.stdout)
-                .expect("Non valid UTF-8")
-                .trim_start()
-                .split_once(':')
-                .and_then(|(first, _)| first.parse::<usize>().ok())
-                .expect("Expected format (num: text)");
-
-            dump_index(selected_index)
+            panic!("Interactive Mode should already be checked")
         }
 
         // Unspecified, so print suggestions and exit
@@ -248,4 +201,115 @@ pub fn get_dump_range(
             unreachable!("suggest_name exits");
         }
     }
+}
+
+pub trait DumpRange {
+    fn dump_range(&self, range: Option<Range<usize>>) -> anyhow::Result<()> {
+        let mut writer = io::stdout();
+        if self.dump_range_into_writer(range, &mut writer).is_err() || writer.flush().is_err() {
+            std::process::exit(0); // Exit when stdout is closed
+        }
+        Ok(())
+    }
+
+    fn dump_range_into_writer(
+        &self,
+        range: Option<Range<usize>>,
+        writer: &mut impl Write,
+    ) -> anyhow::Result<()>;
+}
+
+pub fn interactive_mode(
+    items: &BTreeMap<Item, Range<usize>>,
+    dump_ctx: impl DumpRange + Send + Sync,
+) {
+    use std::process::{Command, Stdio};
+
+    let delimiter = ": ";
+
+    // TODO: check for various fuzzy finders in PATH
+    let mut selector = Command::new("fzf");
+    selector
+        .arg("--no-sort")
+        .arg("--tac")
+        .args(["--delimiter", delimiter])
+        .args(["--nth", "2"]) // Only fuzzy search function name
+        //.args(["--with-nth", "2"]) // Only display function name
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+
+    #[cfg(feature = "ipc")]
+    {
+        // TODO: evaluate if env::current_exe() is better
+        let mut preview_arg: String = std::env::args()
+            .next()
+            .expect("Should only fail when the executable is unlinked");
+        preview_arg.push_str(" --client --server-name=\"");
+        preview_arg.push_str(&ipc::get_address()); // TODO: might require shell escape
+        preview_arg.push_str("\" --select {1}");
+
+        // TODO: maybe check terminal dimensions for smart preview layout
+        selector
+            .args(["--preview-window", "up,60%,border-horizontal"])
+            .arg("--preview")
+            .arg(preview_arg);
+    }
+
+    let selector = selector
+        .spawn()
+        .expect("Failed to start interactive process");
+
+    let mut input = selector.stdin.as_ref().expect("Pipe closed unexpectedly");
+
+    let width = items.len().ilog10() as usize + 1;
+    for (ix, item) in items.keys().enumerate() {
+        // TODO: write in batches
+        writeln!(input, "{ix:width$}{delimiter}{}", item.name).expect("Pipe closed unexpectedly");
+    }
+
+    let wait_selector = || {
+        selector
+            .wait_with_output()
+            .expect("Interactive Process Failure")
+    };
+
+    #[cfg(feature = "ipc")]
+    let selector_out = std::thread::scope(|s| {
+        s.spawn(|| {
+            ipc::start_server(&items, &dump_ctx);
+        });
+        let output = wait_selector();
+
+        ipc::send_server_stop();
+        output
+    });
+
+    #[cfg(not(feature = "ipc"))]
+    let selector_out = wait_selector();
+
+    if !selector_out.status.success() {
+        // TODO: maybe better error reporting
+        esafeprintln!("Interactive process failed");
+        std::process::exit(1);
+    }
+
+    let selected_index = String::from_utf8(selector_out.stdout)
+        .expect("Non valid UTF-8")
+        .trim_start()
+        .split_once(delimiter)
+        .and_then(|(first, _)| first.parse::<usize>().ok())
+        .expect("Expected format (num: text)");
+
+    let range = items
+        .values()
+        .nth(selected_index)
+        .or_else(|| {
+            esafeprintln!("Invalid index selected");
+            std::process::exit(1);
+        })
+        .cloned();
+
+    dump_ctx
+        .dump_range(range)
+        .expect("Should not fail without corruption");
 }

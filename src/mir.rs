@@ -1,11 +1,11 @@
 use crate::{
     cached_lines::CachedLines,
-    color, get_dump_range,
+    color, get_dump_range, interactive_mode,
     opts::{Format, ToDump},
-    safeprintln, Item,
+    DumpRange, Item,
 };
 use owo_colors::OwoColorize;
-use std::{collections::BTreeMap, ops::Range, path::Path};
+use std::{collections::BTreeMap, io::Write, ops::Range, path::Path};
 
 fn find_items(lines: &CachedLines) -> BTreeMap<Item, Range<usize>> {
     let mut res = BTreeMap::new();
@@ -49,13 +49,33 @@ fn find_items(lines: &CachedLines) -> BTreeMap<Item, Range<usize>> {
     res
 }
 
-fn dump_range(_fmt: &Format, strings: &[&str]) {
-    for line in strings {
-        if let Some(ix) = line.rfind("//") {
-            safeprintln!("{}{}", &line[..ix], color!(&line[ix..], OwoColorize::cyan));
-        } else {
-            safeprintln!("{line}");
+struct MirDumpCtx<'a> {
+    #[allow(dead_code)]
+    fmt: &'a Format,
+    strings: &'a [&'a str],
+}
+
+impl DumpRange for MirDumpCtx<'_> {
+    fn dump_range_into_writer(
+        &self,
+        range: Option<Range<usize>>,
+        writer: &mut impl Write,
+    ) -> anyhow::Result<()> {
+        let strings = range.map_or(self.strings, |r| &self.strings[r]);
+
+        for line in strings {
+            if let Some(ix) = line.rfind("//") {
+                writeln!(
+                    writer,
+                    "{}{}",
+                    &line[..ix],
+                    color!(&line[ix..], OwoColorize::cyan)
+                )?;
+            } else {
+                writeln!(writer, "{line}")?;
+            }
         }
+        Ok(())
     }
 }
 
@@ -67,9 +87,14 @@ pub fn dump_function(goal: ToDump, path: &Path, fmt: &Format) -> anyhow::Result<
     let lines = CachedLines::without_ending(std::fs::read_to_string(path)?);
     let items = find_items(&lines);
     let strs = lines.iter().collect::<Vec<_>>();
-    match get_dump_range(goal, fmt, items) {
-        Some(range) => dump_range(fmt, &strs[range]),
-        None => dump_range(fmt, &strs),
+    let dump_ctx = MirDumpCtx {
+        fmt,
+        strings: &strs,
     };
+    if let ToDump::Interactive = goal {
+        interactive_mode(&items, dump_ctx);
+    } else {
+        dump_ctx.dump_range(get_dump_range(goal, fmt, items))?;
+    }
     Ok(())
 }

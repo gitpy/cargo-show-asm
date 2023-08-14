@@ -7,14 +7,14 @@ use crate::{
     cached_lines::CachedLines,
     color,
     demangle::{self, contents},
-    get_dump_range,
+    get_dump_range, interactive_mode,
     opts::{Format, ToDump},
-    safeprintln, Item,
+    safeprintln, DumpRange, Item,
 };
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     ops::Range,
     path::Path,
 };
@@ -72,21 +72,41 @@ pub fn dump_function(goal: ToDump, path: &Path, fmt: &Format) -> anyhow::Result<
     let lines = CachedLines::without_ending(std::fs::read_to_string(path)?);
     let items = find_items(&lines);
     let strs = lines.iter().collect::<Vec<_>>();
-    match get_dump_range(goal, fmt, items) {
-        Some(range) => dump_range(fmt, &strs[range]),
-        None => dump_range(fmt, &strs),
+    let dump_ctx = LlvmDumpCtx {
+        fmt,
+        strings: &strs,
     };
+    if let ToDump::Interactive = goal {
+        interactive_mode(&items, dump_ctx);
+    } else {
+        dump_ctx.dump_range(get_dump_range(goal, fmt, items))?;
+    }
     Ok(())
 }
 
-fn dump_range(fmt: &Format, strings: &[&str]) {
-    for line in strings {
-        if line.starts_with("; ") {
-            safeprintln!("{}", color!(line, OwoColorize::bright_black));
-        } else {
-            let line = demangle::contents(line, fmt.full_name);
-            safeprintln!("{line}");
+pub struct LlvmDumpCtx<'a> {
+    fmt: &'a Format,
+    strings: &'a [&'a str],
+}
+
+impl DumpRange for LlvmDumpCtx<'_> {
+    fn dump_range_into_writer(
+        &self,
+        range: Option<Range<usize>>,
+        writer: &mut impl Write,
+    ) -> anyhow::Result<()> {
+        let &Self { fmt, strings } = self;
+        let strings = range.map_or(strings, |r| &strings[r]);
+
+        for line in strings {
+            if line.starts_with("; ") {
+                writeln!(writer, "{}", color!(line, OwoColorize::bright_black))?;
+            } else {
+                let line = demangle::contents(line, fmt.full_name);
+                writeln!(writer, "{line}")?;
+            }
         }
+        Ok(())
     }
 }
 

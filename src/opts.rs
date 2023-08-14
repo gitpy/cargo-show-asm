@@ -2,6 +2,7 @@ use bpaf::{construct, doc::Style, long, short, Bpaf, Parser};
 use cargo_metadata::Artifact;
 use std::path::PathBuf;
 
+
 fn check_target_dir(path: PathBuf) -> anyhow::Result<PathBuf> {
     if path.is_dir() {
         Ok(path)
@@ -27,6 +28,10 @@ fn check_target_dir(path: PathBuf) -> anyhow::Result<PathBuf> {
 ///   3. Get the full results:
 ///      % cargo asm -p isin --lib isin::base36::from_alphanum
 pub struct Options {
+    #[cfg(feature = "ipc")]
+    #[bpaf(external, optional, hide_usage)]
+    pub client: Option<Client>,
+
     // here is the the code located
     #[bpaf(external)]
     pub select_fragment: SelectFragment,
@@ -51,6 +56,20 @@ pub struct Options {
     // what to display
     #[bpaf(external)]
     pub to_dump: ToDump,
+}
+
+/// TODO: write doc
+#[cfg(feature = "ipc")]
+#[derive(Bpaf, Clone, Debug)]
+pub struct Client {
+    #[allow(dead_code)]
+    client: (),
+    /// Specify Socket Address for client mode
+    #[bpaf(hide_usage)]
+    pub server_name: String,
+    /// Index select to dump in client mode
+    #[bpaf(hide_usage)]
+    pub select: usize,
 }
 
 #[derive(Clone, Debug, Bpaf)]
