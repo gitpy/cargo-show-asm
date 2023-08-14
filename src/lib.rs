@@ -141,24 +141,22 @@ pub fn get_dump_range(
         );
     }
 
-    let dump_index = |value| {
-        if let Some(range) = items.values().nth(value) {
-            Some(range.clone())
-        } else {
-            let actual = items.len();
-            safeprintln!(
-                "You asked to display item #{value} (zero based), but there's only {actual} items"
-            );
-            std::process::exit(1);
-        }
-    };
-
     match goal {
         // to dump everything just return an empty range
         ToDump::Everything => None,
 
         // By index without filtering
-        ToDump::ByIndex { value } => dump_index(value),
+        ToDump::ByIndex { value } => {
+            if let Some(range) = items.values().nth(value) {
+                Some(range.clone())
+            } else {
+                let actual = items.len();
+                safeprintln!(
+                "You asked to display item #{value} (zero based), but there's only {actual} items"
+            );
+                std::process::exit(1);
+            }
+        }
 
         // By index with filtering
         ToDump::Function { function, nth } => {
