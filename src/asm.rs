@@ -373,7 +373,7 @@ pub fn dump_function(
         stmts: &statements,
     };
 
-    if matches!(goal, ToDump::Interactive){
+    if matches!(goal, ToDump::Interactive) {
         interactive_mode(&functions, dump_ctx);
     } else {
         let range = get_dump_range(goal, fmt, functions);
