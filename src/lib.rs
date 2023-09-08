@@ -6,7 +6,9 @@ use std::{
     ops::Range,
 };
 
+use anyhow::Context;
 use opts::{Format, ToDump};
+use select::{Finder, SelectProcess};
 
 pub mod asm;
 pub mod cached_lines;
@@ -18,6 +20,7 @@ pub mod llvm;
 pub mod mca;
 pub mod mir;
 pub mod opts;
+pub mod select;
 
 #[macro_export]
 macro_rules! color {
@@ -221,82 +224,52 @@ pub fn interactive_mode(
     items: &BTreeMap<Item, Range<usize>>,
     dump_ctx: impl DumpRange + Send + Sync,
 ) {
-    use std::process::{Command, Stdio};
-
-    let delimiter = ": ";
-
-    // TODO: check for various fuzzy finders in PATH
-    let mut selector = Command::new("fzf");
-    selector
-        .arg("--no-sort")
-        .arg("--tac")
-        .args(["--delimiter", delimiter])
-        .args(["--nth", "2"]) // Only fuzzy search function name
-        //.args(["--with-nth", "2"]) // Only display function name
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
-
-    #[cfg(feature = "ipc")]
-    {
-        // TODO: evaluate if env::current_exe() is better
-        let mut preview_arg: String = std::env::args()
-            .next()
-            .expect("Should only fail when the executable is unlinked");
-        preview_arg.push_str(" --client --server-name=\"");
-        preview_arg.push_str(&ipc::get_address()); // TODO: might require shell escape
-        preview_arg.push_str("\" --select {1}");
-
-        // TODO: maybe check terminal dimensions for smart preview layout
-        selector
-            .args(["--preview-window", "up,60%,border-horizontal"])
-            .arg("--preview")
-            .arg(preview_arg);
-    }
+    let finder = Finder::in_path_suggestion().unwrap_or_else(|| {
+        esafeprintln!("No finder found in PATH");
+        std::process::exit(1);
+    });
+    let mut selector = SelectProcess::default_command(finder);
 
     let selector = selector
+        .cmd
         .spawn()
         .expect("Failed to start interactive process");
 
-    let mut input = selector.stdin.as_ref().expect("Pipe closed unexpectedly");
+    let feed_data_and_wait = || {
+        selector
+            .stdin
+            .as_ref()
+            .context("No pipe available")
+            .and_then(|mut stdin| select::serialize(&mut stdin, items))
+            .expect("Select process stdin closed unexpectedly");
 
-    let width = items.len().ilog10() as usize + 1;
-    for (ix, item) in items.keys().enumerate() {
-        // TODO: write in batches
-        writeln!(input, "{ix:width$}{delimiter}{}", item.name).expect("Pipe closed unexpectedly");
-    }
-
-    let wait_selector = || {
         selector
             .wait_with_output()
-            .expect("Interactive Process Failure")
+            .expect("Failed to wait for select process")
     };
 
     #[cfg(feature = "ipc")]
     let selector_out = std::thread::scope(|s| {
         s.spawn(|| {
-            ipc::start_server(&items, &dump_ctx);
+            ipc::start_server(items, &dump_ctx);
         });
-        let output = wait_selector();
 
+        let output = feed_data_and_wait();
         ipc::send_server_stop();
+
         output
     });
 
     #[cfg(not(feature = "ipc"))]
-    let selector_out = wait_selector();
+    let selector_out = feed_data_and_wait();
 
     if !selector_out.status.success() {
-        // TODO: maybe better error reporting
-        esafeprintln!("Interactive process failed");
+        esafeprintln!("Interactive process aborted");
         std::process::exit(1);
     }
 
-    let selected_index = String::from_utf8(selector_out.stdout)
-        .expect("Non valid UTF-8")
-        .trim_start()
-        .split_once(delimiter)
-        .and_then(|(first, _)| first.parse::<usize>().ok())
-        .expect("Expected format (num: text)");
+    let selected_index =
+        select::deserialize(&selector_out.stdout).expect("Expected format (num: text)");
 
     let range = items
         .values()

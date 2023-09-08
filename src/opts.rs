@@ -28,10 +28,6 @@ fn check_target_dir(path: PathBuf) -> anyhow::Result<PathBuf> {
 ///   3. Get the full results:
 ///      % cargo asm -p isin --lib isin::base36::from_alphanum
 pub struct Options {
-    #[cfg(feature = "ipc")]
-    #[bpaf(external, optional, hide_usage)]
-    pub client: Option<Client>,
-
     // here is the the code located
     #[bpaf(external)]
     pub select_fragment: SelectFragment,
@@ -53,17 +49,21 @@ pub struct Options {
     #[bpaf(external)]
     pub syntax: Syntax,
 
+    #[cfg(feature = "ipc")]
+    #[bpaf(external, optional, hide_usage, hide)]
+    pub client: Option<Client>,
+
     // what to display
     #[bpaf(external)]
     pub to_dump: ToDump,
 }
 
-/// TODO: write doc
+/// Retrieve as client:
 #[cfg(feature = "ipc")]
 #[derive(Bpaf, Clone, Debug)]
 pub struct Client {
     #[allow(dead_code)]
-    client: (),
+    pub client: (),
     /// Specify Socket Address for client mode
     #[bpaf(hide_usage)]
     pub server_name: String,
