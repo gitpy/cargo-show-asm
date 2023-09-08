@@ -38,7 +38,9 @@ impl Finder<'_> {
         // In order of priority (Variant, found)
         let mut executables = [
             (Finder::Fzf, false),
+            #[cfg(not(target_os = "windows"))]
             (Finder::Skim, false),
+            #[cfg(not(target_os = "windows"))]
             (Finder::Fzy, false),
         ];
 
@@ -62,11 +64,22 @@ impl Finder<'_> {
         None
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn get_executable(&self) -> &str {
         match self {
             Finder::Fzf => "fzf",
             Finder::Skim => "sk",
             Finder::Fzy => "fzy",
+            Finder::Custom { command, .. } => command[0],
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn get_executable(&self) -> &str {
+        match self {
+            Finder::Fzf => "fzf.exe",
+            Finder::Skim => panic!("Skim doesn't support windows"),
+            Finder::Fzy => panic!("fzy doesn't support windows"),
             Finder::Custom { command, .. } => command[0],
         }
     }
