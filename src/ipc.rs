@@ -129,13 +129,13 @@ where
     dump_ctx
         .dump_range_into_writer(range.cloned(), writer)
         .context("Unexpected Error while dumping")?;
+    writer.flush()?;
     Ok(ServerDirective::Continue)
 }
 
 /// Connects to a server and requests a dump with specified index
 /// and immediately prints it to stdout.
 pub fn start_client(req: Client) {
-
     // Blocks until server accepts connection
     let conn = LocalSocketStream::connect(req.server_name.as_str())
         .or_else(|_| {
