@@ -76,7 +76,7 @@ pub fn dump_function(goal: ToDump, path: &Path, fmt: &Format) -> anyhow::Result<
         fmt,
         strings: &strs,
     };
-    if let ToDump::Interactive = goal {
+    if matches!(goal, ToDump::Interactive)  {
         interactive_mode(&items, dump_ctx);
     } else {
         dump_ctx.dump_range(get_dump_range(goal, fmt, items))?;
